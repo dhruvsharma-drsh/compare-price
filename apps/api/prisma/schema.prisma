@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  amazon
+  ebay
+  walmart
+  flipkart
+  brand_store
+  noon
+  coupang
+  ozon
+}
+
+// ISO-ish codes used by the frontend filters (kept small in v1).
+enum CountryCode {
+  US
+  UK
+  DE
+  IN
+  JP
+  AU
+  CA
+  AE
+  KR
+  RU
+}
+
+enum CurrencyCode {
+  USD
+  EUR
+  GBP
+  INR
+  JPY
+  AUD
+  CAD
+  AED
+  KRW
+  RUB
+}
+
+model Product {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  title    String
+  brand    String?
+  category String?
+  imageUrl String?
+
+  barcode String? // GTIN/EAN/UPC if discovered
+
+  listings Listing[]
+
+  @@index([barcode])
+}
+
+model Listing {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  platform Platform
+  country  CountryCode
+
+  url          String
+  canonicalKey String // canonicalUrlOrSku (unique per platform+country)
+
+  currency   CurrencyCode
+  localPrice Decimal? @db.Decimal(18, 4)
+  shipping   Decimal? @db.Decimal(18, 4)
+
+  inStock  Boolean?
+  rating   Float?
+  reviews  Int?
+
+  lastFetchedAt DateTime?
+  lastError     String?
+  rawHash       String?
+
+  pricePoints PricePoint[]
+
+  @@unique([platform, country, canonicalKey])
+  @@index([productId])
+  @@index([platform, country])
+  @@index([lastFetchedAt])
+}
+
+model PricePoint {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  at        DateTime
+  currency  CurrencyCode
+  localPrice Decimal? @db.Decimal(18, 4)
+  shipping   Decimal? @db.Decimal(18, 4)
+  inStock    Boolean?
+
+  @@index([listingId, at])
+}
+
+model FxRate {
+  id        String   @id @default(cuid())
+  fetchedAt DateTime @default(now())
+
+  base  CurrencyCode
+  quote CurrencyCode
+  rate  Decimal @db.Decimal(18, 8)
+
+  @@unique([base, quote])
+  @@index([fetchedAt])
+}
+

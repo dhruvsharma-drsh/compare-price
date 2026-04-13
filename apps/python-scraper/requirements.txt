@@ -1,0 +1,7 @@
+playwright
+aiohttp
+rapidfuzz
+amazon-paapi5
+python-dotenv
+fastapi
+uvicorn[standard]

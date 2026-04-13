@@ -1,0 +1,25 @@
+{
+  "name": "compare-price-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:python": "cd apps/python-scraper && set PYTHONIOENCODING=utf-8&& venv\\Scripts\\python.exe api.py",
+    "dev": "npx concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:all": "npx concurrently \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:python\"",
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "npm --workspace apps/api run build",
+    "build:web": "npm --workspace apps/web run build"
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
