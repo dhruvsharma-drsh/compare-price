@@ -5,7 +5,14 @@
  * Playwright-based scraping with enhanced stealth capabilities.
  */
 
-const PYTHON_SCRAPER_URL = process.env.PYTHON_SCRAPER_URL || "http://localhost:8000";
+function normalizeServiceUrl(raw?: string): string {
+  const value = raw?.trim();
+  if (!value) return "http://localhost:8000";
+  if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, "");
+  return `http://${value.replace(/\/+$/, "")}`;
+}
+
+const PYTHON_SCRAPER_URL = normalizeServiceUrl(process.env.PYTHON_SCRAPER_URL);
 
 export interface PythonScraperRequest {
   query: string;

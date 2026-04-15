@@ -76,3 +76,17 @@ On Render/Railway you may need to install browser dependencies. If deploy fails,
 npx playwright install --with-deps chromium
 ```
 
+## Render Blueprint
+
+This repo now includes [render.yaml](/abs/e:/work/compare%20price/compare-price/render.yaml) for a full Render deployment:
+- `compare-price-web`: Vite frontend as a static site
+- `compare-price-api`: Express API with Prisma + Postgres
+- `compare-price-python-scraper`: internal FastAPI scraper service
+- `compare-price-db`: Render PostgreSQL database
+
+Important notes:
+- `VITE_API_BASE_URL` is injected from the Render API service automatically.
+- `PYTHON_SCRAPER_URL` is injected from the internal scraper service automatically.
+- Since there are no Prisma migrations checked in yet, the API uses `prisma db push` at startup.
+- Fill any `sync: false` secrets in Render before deploying, especially `SERPAPI_KEY` and any proxy credentials you rely on.
+

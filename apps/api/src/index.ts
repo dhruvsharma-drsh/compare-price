@@ -296,7 +296,9 @@ app.post("/search", async (req, res) => {
   // --- Gemini AI relevance filter (post-scrape) ---
   if (results.length > 0 && process.env.GEMINI_API_KEY) {
     try {
-      const titles = results.map(r => r.product?.title ?? "").filter(Boolean);
+        const titles = results
+          .map((r) => r.product?.title ?? "")
+          .filter((p): p is string => Boolean(p));
       if (titles.length > 0) {
         const verdicts = await filterWithGemini({
           searchQuery: body.query,
@@ -402,7 +404,7 @@ app.get("/product/:productId/history", async (req, res) => {
         country: l.country,
         currency: l.currency,
         baseCurrency,
-        points: l.pricePoints.map((p) => ({
+        points: l.pricePoints.map((p: { at: Date; localPrice: unknown; shipping: unknown; inStock: boolean | null }) => ({
           at: p.at,
           local: p.localPrice != null ? Number(p.localPrice) : null,
           localShipping: p.shipping != null ? Number(p.shipping) : null,

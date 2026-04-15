@@ -28,7 +28,7 @@ export async function compactListingHistory(listingId: string, days = 30, maxRow
 
   if (old.length) {
     await prisma.pricePoint.deleteMany({
-      where: { id: { in: old.map((x) => x.id) } }
+      where: { id: { in: old.map((x: { id: string }) => x.id) } }
     });
   }
 }

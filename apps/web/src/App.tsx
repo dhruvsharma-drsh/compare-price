@@ -1,5 +1,12 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { HistoryChart } from "./HistoryChart";
+
+function normalizeBaseUrl(raw?: string): string {
+  const value = raw?.trim();
+  if (!value) return "http://localhost:4000";
+  if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, "");
+  return `https://${value.replace(/\/+$/, "")}`;
+}
 
 // Types
 type Platform = "amazon" | "ebay" | "walmart" | "flipkart" | "brand_store" | "noon" | "coupang" | "ozon";
@@ -190,6 +197,8 @@ const CATEGORY_DATA: Record<string, { name: string, subcategories: { id: string,
   },
 };
 
+const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [selectedCountries, setSelectedCountries] = useState<CountryCode[]>(["US", "IN", "UK"]);
@@ -233,7 +242,7 @@ export default function App() {
       };
 
       const endpoint = engine === "python" ? "/python-search" : "/search";
-      const res = await fetch(import.meta.env.VITE_API_BASE_URL + endpoint, {
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -272,7 +281,7 @@ export default function App() {
 
   const fetchHistory = async (productId: string) => {
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_BASE_URL}/product/${productId}/history?baseCurrency=${baseCurrency}&days=30`);
+      const res = await fetch(`${API_BASE_URL}/product/${productId}/history?baseCurrency=${baseCurrency}&days=30`);
       if (res.ok) {
         const data = await res.json();
         setHistoryData(data);
