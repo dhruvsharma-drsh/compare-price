@@ -19,18 +19,19 @@ services:
       - key: PYTHON_SCRAPER_URL
         fromService:
           name: compare-price-python-scraper
-          type: pserv
+          type: web
           property: hostport
       - key: GEMINI_API_KEY
         sync: false
 
-  - type: pserv
+  - type: web
     name: compare-price-python-scraper
     runtime: python
     plan: free
     region: singapore
     buildCommand: pip install -r apps/python-scraper/requirements.txt && python -m playwright install --with-deps chromium
     startCommand: cd apps/python-scraper && uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_SCRAPER_PORT
         value: 10000
