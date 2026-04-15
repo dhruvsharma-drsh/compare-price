@@ -74,9 +74,120 @@ const CATEGORY_DATA: Record<string, { name: string, subcategories: { id: string,
     name: "Electronics",
     subcategories: [
       { id: "smartphones", name: "Smartphones" },
-      { id: "laptops", name: "Laptops" }
+      { id: "laptops", name: "Laptops" },
+      { id: "headphones", name: "Headphones & Earbuds" },
+      { id: "tablets", name: "Tablets" },
+      { id: "smartwatches", name: "Smartwatches" },
+      { id: "cameras", name: "Cameras" },
+      { id: "speakers", name: "Speakers" },
+      { id: "monitors", name: "Monitors" },
+      { id: "storage", name: "Storage (SSD/HDD)" },
+      { id: "tvs", name: "Televisions" },
+      { id: "printers", name: "Printers" },
+      { id: "routers", name: "Routers & Networking" },
     ]
-  }
+  },
+  gaming: {
+    name: "Gaming",
+    subcategories: [
+      { id: "consoles", name: "Gaming Consoles" },
+      { id: "controllers", name: "Controllers & Gamepads" },
+      { id: "gaming_laptops", name: "Gaming Laptops" },
+      { id: "gaming_monitors", name: "Gaming Monitors" },
+      { id: "gaming_chairs", name: "Gaming Chairs" },
+      { id: "vr_headsets", name: "VR Headsets" },
+      { id: "graphics_cards", name: "Graphics Cards (GPU)" },
+    ]
+  },
+  fashion: {
+    name: "Fashion",
+    subcategories: [
+      { id: "sneakers", name: "Sneakers & Shoes" },
+      { id: "sunglasses", name: "Sunglasses" },
+      { id: "watches", name: "Watches" },
+      { id: "handbags", name: "Handbags & Wallets" },
+      { id: "jackets", name: "Jackets & Coats" },
+      { id: "perfumes", name: "Perfumes & Fragrances" },
+      { id: "backpacks", name: "Backpacks & Bags" },
+    ]
+  },
+  home: {
+    name: "Home & Kitchen",
+    subcategories: [
+      { id: "vacuum_cleaners", name: "Vacuum Cleaners" },
+      { id: "air_purifiers", name: "Air Purifiers" },
+      { id: "coffee_machines", name: "Coffee Machines" },
+      { id: "blenders", name: "Blenders & Mixers" },
+      { id: "air_fryers", name: "Air Fryers" },
+      { id: "washing_machines", name: "Washing Machines" },
+      { id: "refrigerators", name: "Refrigerators" },
+      { id: "microwaves", name: "Microwaves & Ovens" },
+    ]
+  },
+  sports: {
+    name: "Sports & Fitness",
+    subcategories: [
+      { id: "fitness_trackers", name: "Fitness Trackers" },
+      { id: "treadmills", name: "Treadmills" },
+      { id: "dumbbells", name: "Dumbbells & Weights" },
+      { id: "yoga_mats", name: "Yoga Mats & Equipment" },
+      { id: "cycles", name: "Cycles & Bicycles" },
+      { id: "sports_shoes", name: "Sports Shoes" },
+    ]
+  },
+  beauty: {
+    name: "Beauty & Health",
+    subcategories: [
+      { id: "trimmers", name: "Trimmers & Shavers" },
+      { id: "hair_dryers", name: "Hair Dryers & Stylers" },
+      { id: "skincare", name: "Skincare Devices" },
+      { id: "electric_toothbrush", name: "Electric Toothbrushes" },
+      { id: "massagers", name: "Massagers" },
+    ]
+  },
+  books: {
+    name: "Books & Media",
+    subcategories: [
+      { id: "textbooks", name: "Textbooks" },
+      { id: "novels", name: "Novels & Fiction" },
+      { id: "ereaders", name: "E-Readers" },
+    ]
+  },
+  automotive: {
+    name: "Automotive",
+    subcategories: [
+      { id: "dash_cams", name: "Dash Cameras" },
+      { id: "car_accessories", name: "Car Accessories" },
+      { id: "car_chargers", name: "Car Chargers & Electronics" },
+      { id: "tires", name: "Tires" },
+    ]
+  },
+  toys: {
+    name: "Toys & Kids",
+    subcategories: [
+      { id: "action_figures", name: "Action Figures & Collectibles" },
+      { id: "lego", name: "LEGO & Building Sets" },
+      { id: "drones", name: "Drones" },
+      { id: "board_games", name: "Board Games & Puzzles" },
+    ]
+  },
+  office: {
+    name: "Office & Stationery",
+    subcategories: [
+      { id: "office_chairs", name: "Office Chairs" },
+      { id: "desks", name: "Desks & Standing Desks" },
+      { id: "keyboards", name: "Keyboards" },
+      { id: "mice", name: "Mice & Trackpads" },
+    ]
+  },
+  grocery: {
+    name: "Groceries & Food",
+    subcategories: [
+      { id: "protein_supplements", name: "Protein & Supplements" },
+      { id: "snacks", name: "Snacks & Chocolates" },
+      { id: "beverages", name: "Beverages & Drinks" },
+    ]
+  },
 };
 
 export default function App() {

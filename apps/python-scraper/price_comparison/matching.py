@@ -9,7 +9,7 @@ KNOWN_BRANDS = ["apple", "samsung", "google", "sony", "microsoft", "dell", "hp",
 STORAGE_PATTERN = re.compile(r'(\d+)\s*(gb|tb)', re.IGNORECASE)
 SCREEN_PATTERN = re.compile(r'(\d+\.?\d*)\s*(inch|"|-inch|)', re.IGNORECASE)
 
-MATCH_THRESHOLD = 72
+MATCH_THRESHOLD = 85
 
 def extract_attributes(name: str) -> ProductAttributes:
     name_lower = name.lower()
@@ -22,7 +22,7 @@ def extract_attributes(name: str) -> ProductAttributes:
     screen_match = SCREEN_PATTERN.search(name_lower)
     screen_size = screen_match.group(1) if screen_match else None
     
-    variants = re.findall(r'\b(max|plus|ultra|pro|mini)\b', name_lower)
+    variants = re.findall(r'\b(max|plus|ultra|pro|mini|fe|se|lite|fold|flip|slim|disc|digital|oled)\b', name_lower)
     model_number = " ".join(sorted(set(variants))) if variants else None
     
     return ProductAttributes(brand=brand, storage=storage, screen_size=screen_size, model_number=model_number)

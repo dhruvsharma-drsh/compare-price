@@ -130,17 +130,24 @@ class StealthScraper:
         except ValueError:
             return None
 
-    async def _navigate_with_proxy_fallback(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 45000):
+    async def _navigate_with_proxy_fallback(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 45000, expected_selector: str = None):
         """Navigate to URL; if proxy tunnel fails, retry without proxy."""
         ctx = await self._new_stealth_context()
         page = await ctx.new_page()
         try:
             await page.goto(url, wait_until=wait_until, timeout=timeout)
+            
+            if expected_selector:
+                try:
+                    await page.wait_for_selector(expected_selector, timeout=5000)
+                except Exception:
+                    raise Exception("net::ERR_PROXY_CAPTCHA_DETECTED")
+            
             return page, ctx
         except Exception as e:
             err_msg = str(e)
-            if "net::ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "net::ERR_PROXY" in err_msg or "net::ERR_TIMED_OUT" in err_msg:
-                print(f"[{self.platform.upper()} {self.country}] Proxy tunnel or timeout failed. Retrying without proxy...")
+            if "net::ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "net::ERR_PROXY" in err_msg or "net::ERR_TIMED_OUT" in err_msg or "net::ERR_PROXY_CAPTCHA_DETECTED" in err_msg:
+                print(f"[{self.platform.upper()} {self.country}] Proxy tunnel, timeout, or CAPTCHA detected. Retrying without proxy...")
                 try:
                     await page.close()
                     await ctx.close()
@@ -156,10 +163,52 @@ class StealthScraper:
                     )
                     page2 = await ctx2.new_page()
                     await page2.goto(url, wait_until=wait_until, timeout=timeout)
+                    
+                    if expected_selector:
+                        try:
+                            await page2.wait_for_selector(expected_selector, timeout=5000)
+                        except Exception:
+                            # Not found -> page blocked locally too!
+                            raise Exception("net::ERR_PROXY_CAPTCHA_DETECTED")
+
                     print(f"[{self.platform.upper()} {self.country}] [OK] Retry without proxy succeeded")
                     return page2, ctx2
                 except Exception as e2:
                     print(f"[{self.platform.upper()} {self.country}] [FAIL] Retry without proxy also failed: {e2}")
+
+                    # --- 3rd Fallback: ScrapingBee API ---
+                    scrapingbee_key = os.getenv('SCRAPINGBEE_API_KEY')
+                    if scrapingbee_key:
+                        print(f"[{self.platform.upper()} {self.country}] Falling back to ScrapingBee API...")
+                        try:
+                            import aiohttp
+                            import urllib.parse
+                            
+                            # Reverting premium_proxy as it requires a paid tier
+                            sb_url = f"https://app.scrapingbee.com/api/v1?api_key={scrapingbee_key}&url={urllib.parse.quote(url)}&render_js=true"
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(sb_url, timeout=30) as resp:
+                                    if resp.status == 200:
+                                        html = await resp.text()
+                                        
+                                        # Create a clean page to load the HTML into
+                                        sb_browser = await self._get_no_proxy_browser()
+                                        ctx3 = await sb_browser.new_context(
+                                            user_agent=random.choice(USER_AGENTS),
+                                            viewport=random.choice(VIEWPORTS),
+                                            ignore_https_errors=True,
+                                        )
+                                        page3 = await ctx3.new_page()
+                                        # Load the ScrapingBee HTML into Playwright so selectors still work
+                                        await page3.set_content(html, timeout=30000)
+                                        
+                                        print(f"[{self.platform.upper()} {self.country}] [OK] ScrapingBee fallback succeeded")
+                                        return page3, ctx3
+                                    else:
+                                        print(f"[{self.platform.upper()} {self.country}] [FAIL] ScrapingBee API returned status {resp.status}")
+                        except Exception as sb_e:
+                            print(f"[{self.platform.upper()} {self.country}] [FAIL] ScrapingBee fallback failed: {sb_e}")
+                    
                     return None, None
             else:
                 print(f"{self.platform.upper()} error: Page.goto: {err_msg}")

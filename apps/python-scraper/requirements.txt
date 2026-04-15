@@ -5,3 +5,4 @@ amazon-paapi5
 python-dotenv
 fastapi
 uvicorn[standard]
+groq

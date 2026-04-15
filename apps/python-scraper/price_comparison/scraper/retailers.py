@@ -1,4 +1,5 @@
 import os
+import re
 import urllib.parse
 from typing import List
 from ..models import ProductResult
@@ -10,15 +11,125 @@ try:
 except ImportError:
     DefaultApi = None
 
+ANTI_ACCESSORY_KEYWORDS = [
+    "case", "cover", "pouch", "sleeve", "holster", "shell", "housing",
+    "screen protector", "tempered glass", "screen guard", "film",
+    "charger", "adapter", "cable", "cord", "dock", "stand", "mount", "holder",
+    "sticker", "decal", "skin", "wrap",
+    "ring", "grip", "popsocket",
+    "earbuds", "headphones", "airpods",
+    "armband", "strap", "band",
+    "stylus", "pen",
+    "replacement", "spare", "repair", "tool kit"
+]
+
+def is_accessory(product_name: str, search_query: str, subcat: Subcategory = None) -> bool:
+    """Check if the product name looks like an accessory, unless the search query naturally includes those terms."""
+    query_lower = search_query.lower()
+    name_lower = product_name.lower()
+    keywords = subcat.anti_keywords if subcat and hasattr(subcat, 'anti_keywords') and subcat.anti_keywords else ANTI_ACCESSORY_KEYWORDS
+    active_anti_keywords = [ak for ak in keywords if ak not in query_lower]
+    return any(ak in name_lower for ak in active_anti_keywords)
+
+
+async def _serpapi_search(engine: str, query: str, extra_params: dict = None) -> dict:
+    """Helper: call SerpAPI and return JSON response."""
+    serpapi_key = os.getenv('SERPAPI_KEY')
+    if not serpapi_key:
+        return {}
+    import aiohttp
+    params = {
+        "engine": engine,
+        "api_key": serpapi_key,
+    }
+    if engine == "walmart":
+        params["query"] = query
+    elif engine == "amazon":
+        params["k"] = query
+    else:
+        params["q"] = query
+    if extra_params:
+        params.update(extra_params)
+    url = "https://serpapi.com/search.json?" + urllib.parse.urlencode(params)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        print(f"  [SerpAPI] {engine} error: {e}")
+    return {}
+
+
 class AmazonScraper(StealthScraper):
     def __init__(self, country: str):
         super().__init__(country)
         self.platform = "amazon"
         
     async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        # PA-API fallback logic here
+        # Try SerpAPI first (Amazon blocks headless browsers)
+        results = await self._search_serpapi(product, subcat, max_results)
+        if results:
+            return results
+        # Fallback to Playwright
         return await self._search_playwright(product, subcat, max_results)
+
+    async def _search_serpapi(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        """Use SerpAPI for Amazon — avoids bot detection issues."""
+        domain_map = {
+            "IN": "amazon.in", "US": "amazon.com", "UK": "amazon.co.uk",
+            "DE": "amazon.de", "CA": "amazon.ca", "AU": "amazon.com.au",
+            "JP": "amazon.co.jp", "AE": "amazon.ae", "FR": "amazon.fr",
+        }
+        amazon_domain = domain_map.get(self.country.upper(), "amazon.com")
         
+        # Use Amazon engine directly instead of google_shopping
+        data = await _serpapi_search("amazon", product, {
+            "amazon_domain": amazon_domain,
+        })
+        
+        results = []
+        currency_map = {
+            "IN": "INR", "US": "USD", "AE": "AED", "UK": "GBP", "GB": "GBP",
+            "DE": "EUR", "CA": "CAD", "AU": "AUD", "JP": "JPY", "KR": "KRW",
+            "FR": "EUR", "IT": "EUR", "ES": "EUR", "NL": "EUR", "MX": "MXN",
+            "BR": "BRL", "RU": "USD", "SG": "SGD"
+        }
+        
+        # Amazon engine returns results in 'organic_results'
+        for item in data.get("organic_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            if not title or is_accessory(title, product, subcat):
+                continue
+            
+            price_raw = item.get("price", {})
+            if isinstance(price_raw, dict):
+                price_val = price_raw.get("raw") or price_raw.get("extracted") or price_raw.get("value")
+            else:
+                price_val = price_raw
+            
+            price = self._clean_price(str(price_val)) if price_val else None
+            if not price:
+                price_val = item.get("extracted_price") or item.get("price_raw")
+                price = self._clean_price(str(price_val)) if price_val else None
+            
+            link = item.get("link") or item.get("url", "")
+            img = item.get("thumbnail") or item.get("image")
+            
+            if price is not None and link:
+                results.append(ProductResult(
+                    name=title, price=price,
+                    currency=currency_map.get(self.country.upper(), "USD"),
+                    url=link, platform=self.platform, country=self.country,
+                    image_url=img, asin=item.get("asin")
+                ))
+                if len(results) >= max_results:
+                    break
+        
+        if results:
+            print(f"  [SerpAPI] Amazon {self.country}: {len(results)} results")
+        return results
+
     async def _search_playwright(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
         domain_map = {
             "IN": "amazon.in",
@@ -37,8 +148,8 @@ class AmazonScraper(StealthScraper):
             "NL": "amazon.nl",
             "MX": "amazon.com.mx",
             "BR": "amazon.com.br",
-            "KR": "amazon.com",  # No local Amazon; use global
-            "RU": "amazon.com",  # No local Amazon; use global
+            "KR": "amazon.com",
+            "RU": "amazon.com",
         }
         domain = domain_map.get(self.country.upper(), "amazon.com")
         path = subcat.retailer_paths.get(f"amazon_{self.country.lower()}", "")
@@ -63,11 +174,6 @@ class AmazonScraper(StealthScraper):
             items = await page.locator('[data-component-type="s-search-result"]').all()
             print(f"[{self.platform.upper()} {self.country}] Found {len(items)} items. Page length: {len(await page.content())}")
             
-            # Anti-keywords to filter out accessories when searching for the main product
-            anti_keywords = ["case", "cover", "screen protector", "enclosure", "charging cable", "adapter", "charger", "pouch", "housing", "shell", "sticker", "decal"]
-            query_lower = product.lower()
-            filtered_anti = [ak for ak in anti_keywords if ak not in query_lower]
-
             for item in items:
                 if len(results) >= max_results:
                     break
@@ -83,9 +189,7 @@ class AmazonScraper(StealthScraper):
                     name = await name_loc.first.text_content()
                     name = name.strip()
                     
-                    # Basic filtering for accessories
-                    name_lower = name.lower()
-                    if any(ak in name_lower for ak in filtered_anti):
+                    if is_accessory(name, product, subcat):
                         continue
                         
                     raw_price = await price_loc.first.text_content()
@@ -130,47 +234,16 @@ class FlipkartScraper(StealthScraper):
         self.platform = "flipkart"
 
     async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        serpapi_key = os.getenv('SERPAPI_KEY')
-        if serpapi_key:
-            try:
-                import aiohttp
-                query = urllib.parse.quote_plus(product)
-                url = f"https://serpapi.com/search.json?engine=flipkart&q={query}&api_key={serpapi_key}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            results = []
-                            for item in data.get('organic_results', [])[:max_results]:
-                                price_val = item.get('price') or item.get('extracted_price')
-                                price = self._clean_price(str(price_val)) if price_val else None
-                                if price is not None:
-                                    results.append(ProductResult(
-                                        name=item.get('title'),
-                                        price=price,
-                                        currency="INR",
-                                        url=item.get('link'),
-                                        platform=self.platform,
-                                        country=self.country,
-                                        image_url=item.get('thumbnail')
-                                    ))
-                            if results:
-                                return results
-            except Exception as e:
-                print(f"SerpAPI Error: {e}")
-                # Fallback to Playwright
-        
+        return await self._search_playwright(product, subcat, max_results)
+
+    async def _search_playwright(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
         results = []
-        path = subcat.retailer_paths.get("flipkart", "/search?q=")
         query = urllib.parse.quote_plus(product)
-        if "q=" not in path:
-            url = f"https://www.flipkart.com{path}&q={query}"
-        else:
-            url = f"https://www.flipkart.com{path}{query}"
+        url = f"https://www.flipkart.com/search?q={query}"
             
         try:
             print(f"[{self.platform.upper()} {self.country}] Navigating to {url}")
-            page, ctx = await self._navigate_with_proxy_fallback(url, wait_until="domcontentloaded", timeout=45000)
+            page, ctx = await self._navigate_with_proxy_fallback(url, wait_until="domcontentloaded", timeout=45000, expected_selector='div[data-id]')
             if page is None:
                 return results
 
@@ -179,30 +252,43 @@ class FlipkartScraper(StealthScraper):
 
             items = await page.locator('div[data-id]').all()
             print(f"[{self.platform.upper()}] Found {len(items)} items")
-            for item in items[:max_results]:
+            for item in items[:max_results * 2]:
+                if len(results) >= max_results:
+                    break
                 try:
-                    # Generic robust selectors
-                    name_loc = item.locator('img[alt]')
-                    price_loc = item.locator('text=₹')
-                    
-                    if await name_loc.count() == 0 or await price_loc.count() == 0:
+                    # Title from img alt attribute (most reliable)
+                    img_loc = item.locator('img[alt]')
+                    if await img_loc.count() == 0:
                         continue
-                        
-                    name = await name_loc.first.get_attribute('alt')
-                    if not name or name == "Image":
-                        # fallback
-                        name = await item.locator('a[target="_blank"][title]').first.text_content()
+                    name = await img_loc.first.get_attribute('alt')
+                    if not name or name == "Image" or len(name) < 5:
+                        continue
                     
-                    raw_price = await price_loc.first.text_content()
-                    price = self._clean_price(raw_price)
-                    item_url = await item.locator('a[target="_blank"]').first.get_attribute('href')
+                    if is_accessory(name, product, subcat):
+                        continue
+
+                    # Price from inner HTML using regex (₹ symbol)
+                    html = await item.inner_html()
+                    price_matches = re.findall(r'[\u20B9\u20A8][0-9,]+', html)
+                    if not price_matches:
+                        continue
                     
-                    img_url = await name_loc.first.get_attribute('src')
+                    price = self._clean_price(price_matches[0])
+                    
+                    # URL from first anchor
+                    link_loc = item.locator('a[href*="pid="], a[target="_blank"]')
+                    if await link_loc.count() == 0:
+                        continue
+                    item_url = await link_loc.first.get_attribute('href')
+                    
+                    # Image URL
+                    img_url = await img_loc.first.get_attribute('src')
 
                     if price is not None and item_url:
+                        full_url = item_url if item_url.startswith('http') else f"https://www.flipkart.com{item_url}"
                         results.append(ProductResult(
                             name=name, price=price, currency="INR",
-                            url=f"https://www.flipkart.com{item_url}", platform=self.platform, country=self.country,
+                            url=full_url, platform=self.platform, country=self.country,
                             image_url=img_url
                         ))
                 except Exception as e:
@@ -211,42 +297,42 @@ class FlipkartScraper(StealthScraper):
             print(f"Flipkart nav err: {e}")
         return results
 
+
 class WalmartScraper(StealthScraper):
     def __init__(self, country: str = "US"):
         super().__init__(country)
         self.platform = "walmart"
 
     async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        serpapi_key = os.getenv('SERPAPI_KEY')
-        if serpapi_key:
-            try:
-                import urllib.parse, aiohttp
-                query = urllib.parse.quote_plus(product)
-                url = f"https://serpapi.com/search.json?engine=walmart&query={query}&api_key={serpapi_key}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            results = []
-                            for item in data.get("organic_results", [])[:max_results]:
-                                price_dict = item.get("primary_offer", {})
-                                price_val = price_dict.get("offer_price")
-                                if price_val:
-                                    results.append(ProductResult(
-                                        name=item.get("title", ""),
-                                        price=float(price_val),
-                                        currency="USD",
-                                        url=item.get("product_page_url", ""),
-                                        platform=self.platform,
-                                        country=self.country,
-                                        image_url=item.get("thumbnail")
-                                    ))
-                            if results:
-                                return results
-            except Exception as e:
-                print(f"Walmart SerpAPI Error: {e}")
+        # SerpAPI primary (Walmart blocks bots heavily)
+        results = await self._search_serpapi(product, subcat, max_results)
+        if results:
+            return results
+        return await self._search_playwright(product, subcat, max_results)
 
-        # Fallback Playwright
+    async def _search_serpapi(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        data = await _serpapi_search("walmart", product)
+        results = []
+        for item in data.get("organic_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            if not title or is_accessory(title, product, subcat):
+                continue
+            price_dict = item.get("primary_offer", {})
+            price_val = price_dict.get("offer_price")
+            if price_val:
+                results.append(ProductResult(
+                    name=title, price=float(price_val), currency="USD",
+                    url=item.get("product_page_url", ""),
+                    platform=self.platform, country=self.country,
+                    image_url=item.get("thumbnail")
+                ))
+                if len(results) >= max_results:
+                    break
+        if results:
+            print(f"  [SerpAPI] Walmart: {len(results)} results")
+        return results
+
+    async def _search_playwright(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
         results = []
         domain = "walmart.ca" if self.country.upper() == "CA" else "walmart.com"
         query = urllib.parse.quote_plus(product)
@@ -264,15 +350,16 @@ class WalmartScraper(StealthScraper):
                     break
                 try:
                     name_loc = item.locator('span[data-automation-id="product-title"]')
-                    price_loc = item.locator('div[data-automation-id="product-price"] span.w_iUH7')  # W_iUH7 or similar dynamic class, try more generic
                     
                     if await name_loc.count() == 0:
                         continue
                         
                     name = await name_loc.first.text_content()
                     
+                    if is_accessory(name, product, subcat):
+                        continue
+                    
                     raw_price = None
-                    # Fallback generic price selector
                     price_spans = await item.locator('[data-automation-id="product-price"] span').all()
                     for span in price_spans:
                         txt = await span.text_content()
@@ -302,47 +389,6 @@ class WalmartScraper(StealthScraper):
             
         return results
 
-class NoonScraper(StealthScraper):
-    def __init__(self, country: str = "AE"):
-        super().__init__(country)
-        self.platform = "noon"
-
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        return []
-
-class CoupangScraper(StealthScraper):
-    def __init__(self, country: str = "KR"):
-        super().__init__(country)
-        self.platform = "coupang"
-
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        return []
-
-class OzonScraper(StealthScraper):
-    def __init__(self, country: str = "RU"):
-        super().__init__(country)
-        self.platform = "ozon"
-
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
-        return []
-
-class MyntraScraper(StealthScraper):
-    def __init__(self, country: str = "IN"):
-        super().__init__(country)
-        self.platform = "myntra"
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
-
-class MeeshoScraper(StealthScraper):
-    def __init__(self, country: str = "IN"):
-        super().__init__(country)
-        self.platform = "meesho"
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
-
-class BestBuyScraper(StealthScraper):
-    def __init__(self, country: str = "US"):
-        super().__init__(country)
-        self.platform = "bestbuy"
-    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
 
 class EbayScraper(StealthScraper):
     def __init__(self, country: str = "US"):
@@ -363,48 +409,81 @@ class EbayScraper(StealthScraper):
         results = []
         try:
             print(f"[{self.platform.upper()} {self.country}] Navigating to {url}")
-            page, ctx = await self._navigate_with_proxy_fallback(url, wait_until="domcontentloaded", timeout=45000)
+            page, ctx = await self._navigate_with_proxy_fallback(url, wait_until="domcontentloaded", timeout=45000, expected_selector='.s-card')
             if page is None:
                 return results
                 
             await self._human_delay()
             await self._scroll_page(page, loops=2)
 
-            items = await page.locator('.s-item, .s-card').all()
-            print(f"[{self.platform.upper()}] Found {len(items)} items")
+            # eBay now uses .s-card elements. First ~2 are "Shop on eBay" placeholders.
+            cards = await page.locator('.s-card').all()
+            print(f"[{self.platform.upper()}] Found {len(cards)} s-card items")
             
-            for item in items:
+            for card in cards:
                 if len(results) >= max_results:
                     break
                 try:
-                    name_loc = item.locator('.s-item__title, .s-card__title')
-                    price_loc = item.locator('.s-item__price, .s-card__price')
+                    # Get the card's inner text to extract title + price
+                    inner = await card.inner_text()
+                    lines = [l.strip() for l in inner.split('\n') if l.strip() and l.strip() != '\u2063']
                     
-                    if await name_loc.count() == 0 or await price_loc.count() == 0:
+                    # Skip placeholder "Shop on eBay" cards
+                    if not lines or "Shop on eBay" in lines[0] or "Shop on eBay" in inner:
                         continue
-                        
-                    name = await name_loc.first.text_content()
-                    if name.lower() == "shop on ebay":
-                        continue
-                        
-                    raw_price = await price_loc.first.text_content()
-                    if " to " in raw_price:
-                        raw_price = raw_price.split("to")[0].strip()
-                    price = self._clean_price(raw_price)
                     
-                    link_loc = item.locator('a.s-item__link, a.s-card__link')
-                    item_url = await link_loc.first.get_attribute('href') if await link_loc.count() > 0 else None
-                    if not item_url:
+                    # Skip noise lines that appear before the title
+                    while lines and (lines[0] in ["Find more like this", "Sponsored", "Opens in a new window or tab"] or "NEW LISTING" in lines[0].upper()):
+                        lines.pop(0)
+
+                    if not lines:
                         continue
-                        
-                    img_loc = item.locator('img')
+
+                    # Title is the first meaningful line — strip badge prefixes
+                    name = re.sub(r'^(NEW LOW PRICE|NEW LISTING|GREAT PRICE|Sponsored)', '', lines[0], flags=re.IGNORECASE).strip()
+                    if not name or len(name) < 5:
+                        continue
+                    
+                    if is_accessory(name, product, subcat):
+                        continue
+                    
+                    # Find price in text lines (look for $, GBP, EUR patterns)
+                    raw_price = None
+                    for line in lines:
+                        if re.match(r'^[\$\u00A3\u20AC][\d,]+\.?\d*', line):
+                            raw_price = line
+                            break
+                    
+                    if not raw_price:
+                        # Try regex on the whole text
+                        price_match = re.search(r'[\$\u00A3\u20AC][\d,]+\.?\d*', inner)
+                        if price_match:
+                            raw_price = price_match.group(0)
+                    
+                    price = self._clean_price(raw_price) if raw_price else None
+                    
+                    # Get the product link (should contain /itm/)
+                    link_loc = card.locator('a[href*="/itm/"]')
+                    if await link_loc.count() == 0:
+                        # Fallback: any link
+                        link_loc = card.locator('a')
+                    
+                    if await link_loc.count() == 0:
+                        continue
+                    
+                    item_url = await link_loc.first.get_attribute('href')
+                    if not item_url or 'itm/123456' in item_url:
+                        continue
+                    
+                    # Get image
+                    img_loc = card.locator('img')
                     img_url = await img_loc.first.get_attribute('src') if await img_loc.count() > 0 else None
 
                     currency_map = {"US": "USD", "UK": "GBP", "DE": "EUR", "CA": "CAD", "AU": "AUD", "IT": "EUR", "FR": "EUR", "ES": "EUR", "IN": "USD", "AE": "USD"}
                     
                     if price is not None and item_url:
                         results.append(ProductResult(
-                            name=name.replace("New Listing", ""), 
+                            name=name, 
                             price=price, 
                             currency=currency_map.get(self.country.upper(), "USD"),
                             url=item_url, 
@@ -418,6 +497,206 @@ class EbayScraper(StealthScraper):
             print(f"Ebay error: {e}")
             pass
         return results
+
+
+class NoonScraper(StealthScraper):
+    def __init__(self, country: str = "AE"):
+        super().__init__(country)
+        self.platform = "noon"
+
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        return []
+
+class CoupangScraper(StealthScraper):
+    def __init__(self, country: str = "KR"):
+        super().__init__(country)
+        self.platform = "coupang"
+
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        # Primary: SerpAPI Google Shopping (gl=kr returns Coupang listings)
+        results = await self._search_serpapi_shopping(product, subcat, max_results)
+        if results:
+            return results
+        # Secondary: SerpAPI Google Search with site:coupang.com
+        results = await self._search_serpapi_google(product, subcat, max_results)
+        if results:
+            return results
+        return []
+
+    async def _search_serpapi_shopping(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        """Use Google Shopping API localized to South Korea — returns Coupang listings."""
+        data = await _serpapi_search("google_shopping", product, {
+            "gl": "kr",
+            "hl": "ko",
+            "location": "South Korea",
+        })
+        results = []
+        for item in data.get("shopping_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            source = (item.get("source") or "").lower()
+            if not title or is_accessory(title, product, subcat):
+                continue
+            # Prefer Coupang listings but accept all Korean shopping results
+            price_val = item.get("extracted_price") or item.get("price")
+            price = self._clean_price(str(price_val)) if price_val else None
+            if price is None or price <= 0:
+                continue
+            link = item.get("link") or item.get("product_link") or ""
+            img = item.get("thumbnail")
+            platform_name = "coupang" if "coupang" in source else f"coupang ({source})"
+            results.append(ProductResult(
+                name=title, price=price,
+                currency="KRW",
+                url=link, platform=platform_name, country=self.country,
+                image_url=img
+            ))
+            if len(results) >= max_results:
+                break
+        if results:
+            print(f"  [SerpAPI] Coupang/KR Shopping: {len(results)} results")
+        return results
+
+    async def _search_serpapi_google(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        """Fallback: Google Search with site:coupang.com to find product pages."""
+        data = await _serpapi_search("google", f"{product} site:coupang.com", {
+            "gl": "kr",
+            "hl": "ko",
+        })
+        results = []
+        for item in data.get("organic_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            link = item.get("link", "")
+            snippet = item.get("snippet", "")
+            if not title or not link or "coupang.com" not in link:
+                continue
+            if is_accessory(title, product, subcat):
+                continue
+            # Try to extract price from snippet (e.g. "39,900원" or "₩39,900")
+            price = None
+            price_match = re.search(r'[\d,.]+ *(?:원|won)', snippet, re.IGNORECASE)
+            if price_match:
+                price = self._clean_price(price_match.group())
+            if not price:
+                price_match = re.search(r'₩ *[\d,.]+', snippet)
+                if price_match:
+                    price = self._clean_price(price_match.group())
+            # Even without price, include the result so the user gets a link
+            if price is None:
+                price = 0.0
+            img = item.get("thumbnail")
+            results.append(ProductResult(
+                name=title, price=price if price > 0 else None,
+                currency="KRW",
+                url=link, platform=self.platform, country=self.country,
+                image_url=img
+            ))
+            if len(results) >= max_results:
+                break
+        if results:
+            print(f"  [SerpAPI] Coupang Google Search: {len(results)} results")
+        return results
+
+
+class OzonScraper(StealthScraper):
+    def __init__(self, country: str = "RU"):
+        super().__init__(country)
+        self.platform = "ozon"
+
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        # Primary: SerpAPI Google Shopping (gl=ru returns Ozon listings)
+        results = await self._search_serpapi_shopping(product, subcat, max_results)
+        if results:
+            return results
+        # Secondary: SerpAPI Google Search with site:ozon.ru
+        results = await self._search_serpapi_google(product, subcat, max_results)
+        if results:
+            return results
+        return []
+
+    async def _search_serpapi_shopping(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        """Use Google Shopping API localized to Russia — returns Ozon/Russian retailer listings."""
+        data = await _serpapi_search("google_shopping", product, {
+            "gl": "ru",
+            "hl": "ru",
+            "location": "Russia",
+        })
+        results = []
+        for item in data.get("shopping_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            source = (item.get("source") or "").lower()
+            if not title or is_accessory(title, product, subcat):
+                continue
+            price_val = item.get("extracted_price") or item.get("price")
+            price = self._clean_price(str(price_val)) if price_val else None
+            if price is None or price <= 0:
+                continue
+            link = item.get("link") or item.get("product_link") or ""
+            img = item.get("thumbnail")
+            platform_name = "ozon" if "ozon" in source else f"ozon ({source})"
+            results.append(ProductResult(
+                name=title, price=price,
+                currency="RUB",
+                url=link, platform=platform_name, country=self.country,
+                image_url=img
+            ))
+            if len(results) >= max_results:
+                break
+        if results:
+            print(f"  [SerpAPI] Ozon/RU Shopping: {len(results)} results")
+        return results
+
+    async def _search_serpapi_google(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]:
+        """Fallback: Google Search with site:ozon.ru to find product pages."""
+        data = await _serpapi_search("google", f"{product} site:ozon.ru", {
+            "gl": "ru",
+            "hl": "ru",
+        })
+        results = []
+        for item in data.get("organic_results", [])[:max_results * 2]:
+            title = item.get("title", "")
+            link = item.get("link", "")
+            snippet = item.get("snippet", "")
+            if not title or not link or "ozon.ru" not in link:
+                continue
+            if is_accessory(title, product, subcat):
+                continue
+            # Try to extract price from snippet (e.g. "39 900 ₽" or "39900 руб")
+            price = None
+            price_match = re.search(r'[\d\s,.]+\s*(?:₽|руб|rub)', snippet, re.IGNORECASE)
+            if price_match:
+                price = self._clean_price(price_match.group())
+            if price is None:
+                price = 0.0
+            img = item.get("thumbnail")
+            results.append(ProductResult(
+                name=title, price=price if price > 0 else None,
+                currency="RUB",
+                url=link, platform=self.platform, country=self.country,
+                image_url=img
+            ))
+            if len(results) >= max_results:
+                break
+        if results:
+            print(f"  [SerpAPI] Ozon Google Search: {len(results)} results")
+        return results
+
+class MyntraScraper(StealthScraper):
+    def __init__(self, country: str = "IN"):
+        super().__init__(country)
+        self.platform = "myntra"
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
+
+class MeeshoScraper(StealthScraper):
+    def __init__(self, country: str = "IN"):
+        super().__init__(country)
+        self.platform = "meesho"
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
+
+class BestBuyScraper(StealthScraper):
+    def __init__(self, country: str = "US"):
+        super().__init__(country)
+        self.platform = "bestbuy"
+    async def search(self, product: str, subcat: Subcategory, max_results: int) -> List[ProductResult]: return []
 
 class GmarketScraper(StealthScraper):
     def __init__(self, country: str = "KR"):

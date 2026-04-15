@@ -8,7 +8,8 @@ from .models import ProductResult
 from .categories import CATEGORIES
 from .matching import group_products, ProductGroup
 from .currency import CurrencyConverter
-from .scraper.retailers import AmazonScraper, FlipkartScraper
+from .scraper.retailers import AmazonScraper, FlipkartScraper, WalmartScraper, EbayScraper
+from .gemini_filter import filter_results_with_gemini
 
 class ComparisonReport:
     def __init__(self, query: str, category: str, subcategory: str):
@@ -78,7 +79,7 @@ class PriceComparisonSystem:
         self._browser_semaphore = asyncio.Semaphore(4)
 
     # Per-scraper timeout in seconds
-    SCRAPER_TIMEOUT = 45
+    SCRAPER_TIMEOUT = 60
 
     async def _safe_scrape(self, scraper, product, subcat, max_results, report, retries=0):
         """Run a single scraper with timeout, retry, and concurrency limiting."""
@@ -105,33 +106,40 @@ class PriceComparisonSystem:
                     report.errors[name] = str(e)
         return []
 
-    def get_scrapers_for_country(self, country: str):
+    def get_scrapers_for_country(self, country: str, platforms: List[str] = None):
         c = country.upper()
         if c == 'IN':
-            return [AmazonScraper('IN'), FlipkartScraper('IN')]
+            scrapers = [AmazonScraper('IN'), FlipkartScraper('IN'), EbayScraper('IN')]
         elif c == 'US':
-            return [AmazonScraper('US')]
+            scrapers = [AmazonScraper('US'), WalmartScraper('US'), EbayScraper('US')]
         elif c == 'UK' or c == 'GB':
-            return [AmazonScraper('UK')]
+            scrapers = [AmazonScraper('UK'), EbayScraper('UK')]
         elif c == 'AE':
-            return [AmazonScraper('AE')]
+            scrapers = [AmazonScraper('AE')]
         elif c == 'DE':
-            return [AmazonScraper('DE')]
+            scrapers = [AmazonScraper('DE'), EbayScraper('DE')]
         elif c == 'CA':
-            return [AmazonScraper('CA')]
+            scrapers = [AmazonScraper('CA'), WalmartScraper('CA'), EbayScraper('CA')]
         elif c == 'AU':
-            return [AmazonScraper('AU')]
+            scrapers = [AmazonScraper('AU'), EbayScraper('AU')]
         elif c == 'JP':
-            return [AmazonScraper('JP')]
+            scrapers = [AmazonScraper('JP')]
         elif c == 'KR':
-            return [AmazonScraper('KR')]
+            from .scraper.retailers import CoupangScraper
+            scrapers = [AmazonScraper('KR'), CoupangScraper('KR')]
         elif c == 'RU':
-            return [AmazonScraper('RU')]
-        return [AmazonScraper(c)]
+            from .scraper.retailers import OzonScraper
+            scrapers = [AmazonScraper('RU'), OzonScraper('RU')]
+        else:
+            scrapers = [AmazonScraper(c), EbayScraper(c)]
+            
+        if platforms:
+            scrapers = [s for s in scrapers if s.platform in platforms]
+        return scrapers
 
-    async def _scrape_country(self, country: str, product_query: str, subcat, report: ComparisonReport):
+    async def _scrape_country(self, country: str, product_query: str, subcat, report: ComparisonReport, platforms: List[str] = None):
         """Scrape all retailers for a single country concurrently."""
-        scrapers = self.get_scrapers_for_country(country)
+        scrapers = self.get_scrapers_for_country(country, platforms)
         print(f"   [{country}] Launching {len(scrapers)} scrapers...")
         tasks = [
             self._safe_scrape(scraper, product_query, subcat, max_results=5, report=report) 
@@ -144,7 +152,7 @@ class PriceComparisonSystem:
         print(f"   [{country}] Done -- {len(results)} results")
         return results
 
-    async def compare(self, product_query: str, countries: List[str], category_id: str, subcategory_id: str) -> ComparisonReport:
+    async def compare(self, product_query: str, countries: List[str], platforms: List[str] = None, category_id: str = "electronics", subcategory_id: str = "smartphones") -> ComparisonReport:
         report = ComparisonReport(product_query, category_id, subcategory_id)
         
         category = CATEGORIES.get(category_id)
@@ -158,7 +166,7 @@ class PriceComparisonSystem:
 
         # Scrape ALL countries concurrently (semaphore limits actual browser instances)
         country_tasks = [
-            self._scrape_country(country, product_query, subcat, report)
+            self._scrape_country(country, product_query, subcat, report, platforms)
             for country in countries
         ]
         all_country_results = await asyncio.gather(*country_tasks)
@@ -166,6 +174,24 @@ class PriceComparisonSystem:
         all_results = []
         for country_results in all_country_results:
             all_results.extend(country_results)
+
+        # --- Gemini AI relevance filter (post-scrape) ---
+        if all_results:
+            product_names = [r.name for r in all_results]
+            try:
+                verdicts = await filter_results_with_gemini(
+                    search_query=product_query,
+                    product_names=product_names,
+                    category=category_id,
+                    subcategory=subcategory_id,
+                )
+                before_count = len(all_results)
+                all_results = [r for r, keep in zip(all_results, verdicts) if keep]
+                removed = before_count - len(all_results)
+                if removed:
+                    print(f"   [GEMINI] Filtered out {removed} irrelevant result(s)")
+            except Exception as e:
+                print(f"   [GEMINI] Filter skipped: {e}")
 
         for r in all_results:
             if r.price is not None:

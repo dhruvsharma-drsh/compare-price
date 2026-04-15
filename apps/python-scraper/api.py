@@ -16,6 +16,9 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env so SERPAPI_KEY, GEMINI_API_KEY, etc. are available
+
 import asyncio
 from typing import List, Optional
 
@@ -32,6 +35,7 @@ from price_comparison.categories import CATEGORIES
 class SearchRequest(BaseModel):
     query: str
     countries: List[str]                      # ["US", "IN", "AE", …]
+    platforms: Optional[List[str]] = None     # ["amazon", "ebay", ...]
     category: Optional[str] = "electronics"
     subcategory: Optional[str] = "smartphones"
     max_results: int = 5
@@ -125,6 +129,7 @@ async def search(req: SearchRequest):
     print(f"[PYTHON SCRAPER] Search request")
     print(f"   Query: \"{req.query}\"")
     print(f"   Countries: {req.countries}")
+    print(f"   Platforms: {req.platforms}")
     print(f"   Category: {req.category} / {req.subcategory}")
     print(f"{'='*60}")
 
@@ -132,6 +137,7 @@ async def search(req: SearchRequest):
         report: ComparisonReport = await system.compare(
             product_query=req.query,
             countries=req.countries,
+            platforms=req.platforms,
             category_id=req.category,
             subcategory_id=req.subcategory,
         )

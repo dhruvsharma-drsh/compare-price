@@ -50,8 +50,10 @@ export async function quickSearchFallback(input: {
   platform: Platform;
   country: CountryCode;
   query: string;
+  category?: string;
+  subcategory?: string;
 }): Promise<QuickSearchWithFallback> {
-  const searchUrl = buildSearchUrl(input.platform, input.country, input.query);
+  const searchUrl = buildSearchUrl(input.platform, input.country, input.query, input.category, input.subcategory);
   if (!searchUrl) {
     console.log(`      [quickSearch] No search URL for ${input.platform}/${input.country}`);
     return { result: null, fallbackProductUrl: null };
@@ -97,6 +99,21 @@ export async function quickSearchFallback(input: {
 
       const result = await page.evaluate((searchQuery) => {
         const queryTokens = searchQuery.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+        const queryLower = searchQuery.toLowerCase();
+        
+        const ACCESSORY_KEYWORDS = [
+          "case", "cover", "pouch", "sleeve", "holster", "shell", "housing",
+          "screen protector", "tempered glass", "screen guard", "film",
+          "charger", "adapter", "cable", "cord", "dock", "stand", "mount", "holder",
+          "sticker", "decal", "skin", "wrap",
+          "ring", "grip", "popsocket",
+          "earbuds", "headphones", "airpods",
+          "armband", "strap", "band",
+          "stylus", "pen",
+          "replacement", "spare", "repair", "tool kit"
+        ];
+        const activeAntiKeywords = ACCESSORY_KEYWORDS.filter(k => !queryLower.includes(k));
+
         const rows = document.querySelectorAll("[data-component-type='s-search-result']");
         const candidates: { title: string; href: string; price: string; score: number }[] = [];
 
@@ -115,6 +132,12 @@ export async function quickSearchFallback(input: {
           if (/^\([\d.]+K?\)$/i.test(t) || t.length < 5) {
             t = a?.textContent?.trim() ?? "";
           }
+          
+          const tLower = t.toLowerCase();
+          if (activeAntiKeywords.some(k => tLower.includes(k) || tLower.includes(`${k}s`))) {
+              continue;
+          }
+
           const h = a?.getAttribute("href") ?? "";
           let p = priceOffscreen?.textContent?.trim() ?? "";
           // Fallback: construct price from whole + fraction
@@ -123,9 +146,14 @@ export async function quickSearchFallback(input: {
             const frac = priceFraction?.textContent?.trim() ?? "00";
             p = whole ? `${whole}.${frac}` : "";
           }
+          // Fallback: regex-search the entire card text for a price pattern
+          if (!p) {
+            const cardText = row.textContent ?? "";
+            const priceMatch = cardText.match(/[\$\u00A3\u20AC\u20B9][\d,]+\.?\d*/);
+            if (priceMatch) p = priceMatch[0];
+          }
           if (t && t.length > 5 && h) {
             // Score by how many query tokens appear in the title
-            const tLower = t.toLowerCase();
             const score = queryTokens.reduce((acc, tok) => tLower.includes(tok) ? acc + 1 : acc, 0);
             candidates.push({ title: t, href: h, price: p, score });
           }
@@ -212,28 +240,45 @@ export async function quickSearchFallback(input: {
       }
 
     } else if (input.platform === "ebay") {
-      // eBay sometimes blocks bots, so be generous with wait
-      await page.waitForSelector("li.s-item a.s-item__link", { timeout: 10000 }).catch(() => {});
+      // eBay now uses .s-card elements instead of li.s-item
+      await page.waitForSelector(".s-card a[href*='/itm/']", { timeout: 10000 }).catch(() => {});
 
       const result = await page.evaluate(() => {
-        const rows = document.querySelectorAll("li.s-item");
-        for (const row of rows) {
-          const a = row.querySelector("a.s-item__link") as HTMLAnchorElement | null;
-          const titleEl = row.querySelector(".s-item__title, .s-item__title span");
-          const priceEl = row.querySelector(".s-item__price");
-          const t = titleEl?.textContent?.trim() ?? "";
-          // Skip the eBay header row and "Shop on eBay"
-          if (!t || t === "Shop on eBay" || t.length < 5) continue;
-          const h = a?.getAttribute("href") ?? "";
-          // Skip placeholder, fragment-only, or javascript: links
-          if (!h || h === "#" || h.startsWith("javascript:") || h === "https://ebay.com/itm/123456") continue;
-          // Skip non-product titles (cookie banners, feedback buttons)
+        const cards = document.querySelectorAll(".s-card");
+        for (const card of cards) {
+          const text = card.textContent ?? "";
+          // Skip "Shop on eBay" placeholder cards
+          if (text.includes("Shop on eBay")) continue;
+          
+          const link = card.querySelector("a[href*='/itm/']") as HTMLAnchorElement | null;
+          const h = link?.getAttribute("href") ?? "";
+          // Skip placeholder links
+          if (!h || h.includes("itm/123456")) continue;
+          
+          // Title is the first meaningful text line
+          let lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 5 && l !== "\u2063");
+          while (lines.length > 0 && (lines[0] === "Find more like this" || lines[0] === "Sponsored" || lines[0] === "Opens in a new window or tab" || lines[0].toUpperCase().includes("NEW LISTING"))) {
+            lines.shift();
+          }
+          // Strip badge prefixes that get concatenated to titles (e.g. "NEW LOW PRICEApple iPhone...")
+          let t = (lines[0] ?? "").trim();
+          t = t.replace(/^(NEW LOW PRICE|NEW LISTING|GREAT PRICE|Sponsored)/gi, "").trim();
+          if (!t || t.length < 5) continue;
+          // Skip non-product titles
           if (t.includes("Let us know") || t.includes("cookie") || t.includes("privacy")) continue;
-          return {
-            title: t,
-            href: h,
-            price: priceEl?.textContent?.trim() ?? ""
-          };
+          
+          // Find price - look for $, £, € patterns
+          let price = "";
+          for (const line of lines) {
+            const m = line.match(/^[\$\u00A3\u20AC][\d,]+\.?\d*/);
+            if (m) { price = m[0]; break; }
+          }
+          if (!price) {
+            const pm = text.match(/[\$\u00A3\u20AC][\d,]+\.?\d*/);
+            if (pm) price = pm[0];
+          }
+          
+          return { title: t, href: h, price };
         }
         return null;
       });

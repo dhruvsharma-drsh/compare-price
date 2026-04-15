@@ -106,20 +106,35 @@ export function evaluateMatch(anchor: string, target: string, anchorBrand?: stri
     }
   }
   
-  // 4. Specific anti-accessory patterns (case, cover, protector, screen guard)
-  //    Only apply if the query itself doesn't mention these
+  // 4. Specific anti-accessory patterns
+  const ACCESSORY_KEYWORDS = [
+    "case", "cover", "pouch", "sleeve", "holster", "shell", "housing",
+    "screen protector", "tempered glass", "screen guard", "film",
+    "charger", "adapter", "cable", "cord", "dock", "stand", "mount", "holder",
+    "sticker", "decal", "skin", "wrap",
+    "ring", "grip", "popsocket",
+    "earbuds", "headphones", "airpods",
+    "armband", "strap", "band",
+    "stylus", "pen",
+    "replacement", "spare", "repair", "tool kit"
+  ];
+
   const textLow = target.toLowerCase();
   const queryLow = anchor.toLowerCase();
-  if (
-    !queryLow.includes("case") && 
-    !queryLow.includes("cover") && 
-    !queryLow.includes("protector") &&
-    !queryLow.includes("guard") &&
-    (textLow.includes("case for") || textLow.includes("cover for") || 
-     textLow.includes("protector for") || textLow.includes("screen guard"))
-  ) {
-    score -= 40;
-    reasons.push("Accessory detected but not in query");
+  
+  // Filter out keywords that actually appear in the search query
+  const activeAntiKeywords = ACCESSORY_KEYWORDS.filter(k => !queryLow.includes(k));
+  
+  // If the product title contains any of the active anti-keywords as full words, heavily penalize
+  const isAccessory = activeAntiKeywords.some(k => {
+    // \b is word boundary, ensuring "pen" doesn't match "opens", and "band" doesn't match "brand"
+    const regex = new RegExp(`\\b${k}s?\\b`, 'i');
+    return regex.test(textLow);
+  });
+
+  if (isAccessory) {
+      score -= 50;
+      reasons.push("Accessory detected but not in query");
   }
 
   const normalizedScore = Math.max(0, Math.min(100, score));

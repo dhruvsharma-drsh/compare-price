@@ -10,6 +10,7 @@ const PYTHON_SCRAPER_URL = process.env.PYTHON_SCRAPER_URL || "http://localhost:8
 export interface PythonScraperRequest {
   query: string;
   countries: string[];
+  platforms?: string[];
   category?: string;
   subcategory?: string;
   max_results?: number;

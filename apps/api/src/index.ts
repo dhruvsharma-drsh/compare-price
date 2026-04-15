@@ -10,6 +10,7 @@ import { upsertFromScrape } from "./services/listingUpsert";
 import { getFxRate } from "./services/fx";
 import { quickSearchFallback } from "./services/quickSearchFallback";
 import { evaluateMatch } from "./services/productMatcher";
+import { filterWithGemini } from "./services/geminiFilter";
 
 dotenv.config();
 if (!process.env.DATABASE_URL) {
@@ -99,7 +100,9 @@ app.post("/search", async (req, res) => {
       const quickResult = await quickSearchFallback({
         platform: platform as any,
         country: country as any,
-        query: body.query
+        query: body.query,
+        category: body.category,
+        subcategory: body.subcategory
       });
       const fallbackMs = Date.now() - fallbackStart;
       if (quickResult.result && quickResult.result.listing.price?.amount && quickResult.result.listing.price.amount > 0) {
@@ -127,7 +130,7 @@ app.post("/search", async (req, res) => {
         console.log(`   🔗 Using fallback URL from quickSearch: ${fallbackProductUrl.slice(0, 80)}`);
         urlToFetch = fallbackProductUrl;
       } else {
-        const searchUrl = buildSearchUrl(platform as any, country as any, body.query);
+        const searchUrl = buildSearchUrl(platform as any, country as any, body.query, body.category, body.subcategory);
         if (searchUrl) {
           console.log(`   🌐 resolveFirstResultUrl(${searchUrl.slice(0, 80)}...)`);
           const resolveStart = Date.now();
@@ -183,7 +186,7 @@ app.post("/search", async (req, res) => {
   );
 
   // Collect results
-  const results: any[] = [];
+  let results: any[] = [];
   const errors: any[] = [];
   const warnings = new Set<string>();
   const seenCanonical = new Set<string>();
@@ -288,6 +291,29 @@ app.post("/search", async (req, res) => {
       matchScore: matchDetails.score,
       matchReasons: matchDetails.reasons
     });
+  }
+
+  // --- Gemini AI relevance filter (post-scrape) ---
+  if (results.length > 0 && process.env.GEMINI_API_KEY) {
+    try {
+      const titles = results.map(r => r.product?.title ?? "").filter(Boolean);
+      if (titles.length > 0) {
+        const verdicts = await filterWithGemini({
+          searchQuery: body.query,
+          productTitles: titles,
+          category: body.category,
+          subcategory: body.subcategory,
+        });
+        const beforeCount = results.length;
+        results = results.filter((_, i) => verdicts[i] !== false);
+        const removed = beforeCount - results.length;
+        if (removed > 0) {
+          console.log(`   🤖 [GEMINI] Filtered out ${removed} irrelevant result(s)`);
+        }
+      }
+    } catch (err) {
+      console.log(`   🤖 [GEMINI] Filter skipped: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   // Summary stats (using converted when available)
@@ -407,7 +433,7 @@ import { isPythonScraperHealthy, searchViaPython } from "./services/pythonScrape
  */
 app.post("/python-search", async (req, res) => {
   const searchStart = Date.now();
-  const { query, countries, baseCurrency, category, subcategory } = req.body;
+  const { query, countries, platforms, baseCurrency, category, subcategory } = req.body;
 
   if (!query || !countries?.length) {
     res.status(400).json({ error: "query and countries are required" });
@@ -418,6 +444,7 @@ app.post("/python-search", async (req, res) => {
   console.log(`🐍 [PYTHON-SEARCH] Delegating to Python scraper`);
   console.log(`   Query: "${query}"`);
   console.log(`   Countries: [${countries.join(', ')}]`);
+  console.log(`   Platforms: [${(platforms || []).join(', ')}]`);
   console.log(`${'═'.repeat(60)}`);
 
   // Check if the Python scraper is running
@@ -438,6 +465,7 @@ app.post("/python-search", async (req, res) => {
     const pyResult = await searchViaPython({
       query,
       countries,
+      platforms: platforms || [],
       category: category || "electronics",
       subcategory: subcategory || "smartphones",
     });
