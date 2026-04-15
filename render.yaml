@@ -50,7 +50,6 @@ services:
   - type: web
     name: compare-price-web
     runtime: static
-    plan: free
     buildCommand: npm ci && npm --workspace apps/web run build
     staticPublishPath: apps/web/dist
     routes:
